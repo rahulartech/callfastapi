@@ -1,50 +1,33 @@
-# server.py
-import json
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.middleware.cors import CORSMiddleware
-from typing import List
+from typing import List, Dict
 
 app = FastAPI()
 
-# Allow Cross-Origin Requests (for front-end testing)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # Adjust as needed for security
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Store connections by room_id (shared chat room ID)
+active_connections: Dict[str, List[WebSocket]] = {}
 
-# Active WebSocket connections
-active_connections = {}
-
-@app.websocket("/ws/{username}")
-async def websocket_endpoint(websocket: WebSocket, username: str):
+@app.websocket("/ws/{room_id}")
+async def websocket_endpoint(websocket: WebSocket, room_id: str):
+    # Accept the WebSocket connection
     await websocket.accept()
-    active_connections[username] = websocket
+
+    # Add the connection to the list for the specified room_id
+    if room_id not in active_connections:
+        active_connections[room_id] = []
+    active_connections[room_id].append(websocket)
+
     try:
         while True:
-            data = await websocket.receive_text()
-            message = json.loads(data)
+            # Wait for a message from the user
+            message = await websocket.receive_text()
 
-            if message["type"] == "offer":
-                # Forward the offer to the target user
-                receiver = message["receiver"]
-                if receiver in active_connections:
-                    await active_connections[receiver].send_text(json.dumps(message))
-            
-            elif message["type"] == "answer":
-                # Forward the answer to the target user
-                receiver = message["receiver"]
-                if receiver in active_connections:
-                    await active_connections[receiver].send_text(json.dumps(message))
-            
-            elif message["type"] == "candidate":
-                # Forward the ICE candidate to the target user
-                receiver = message["receiver"]
-                if receiver in active_connections:
-                    await active_connections[receiver].send_text(json.dumps(message))
-
+            # Broadcast the message to all other users in the same room_id
+            for connection in active_connections[room_id]:
+                if connection != websocket:
+                    await connection.send_text(message)
     except WebSocketDisconnect:
-        # Remove the connection when the user disconnects
-        active_connections.pop(username, None)
+        # Remove the connection when disconnected
+        active_connections[room_id].remove(websocket)
+        if not active_connections[room_id]:
+            del active_connections[room_id]
+        await websocket.close()
